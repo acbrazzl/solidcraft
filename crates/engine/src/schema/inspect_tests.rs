@@ -87,3 +87,31 @@ fn describe_returns_both_schemas() {
     let e = s.execute("engine.describe", &json!({"command": "solid.extrud"})).err().map(|e| e.to_string());
     assert!(e.as_deref().is_some_and(|e| e.contains("did you mean `solid.extrude`")), "{e:?}");
 }
+
+/// `model.edges`' middle and length come from each edge's exact curve: on a cylinder of radius
+/// 4 every edge round it has its middle on that circle and its length a whole turn or a half,
+/// to 1e-9, where the polyline's middle lay inside the circle by up to the chord tolerance (so
+/// as a pick it missed a curved edge by that much). The seam is a line of 20 with its middle at
+/// half height.
+#[test]
+fn model_edges_reports_each_edges_exact_middle_and_length() {
+    use std::f64::consts::PI;
+    let mut s = Session::default();
+    s.execute("solid.cylinder", &json!({"radius": 4, "height": 20, "body_name": "Shaft"})).unwrap_or_else(|e| panic!("{e}"));
+    let r = s.execute("model.edges", &json!({"body": "Shaft"})).unwrap_or_else(|e| panic!("{e}"));
+    let edges = r["edges"].as_array().cloned().unwrap_or_default();
+    let v = |x: &Value| -> [f64; 3] { [x[0].as_f64().unwrap_or(f64::NAN), x[1].as_f64().unwrap_or(f64::NAN), x[2].as_f64().unwrap_or(f64::NAN)] };
+    let (mut round, mut seams) = (0, 0);
+    for e in &edges {
+        let (mid, start, end, length) = (v(&e["mid"]), v(&e["start"]), v(&e["end"]), e["length"].as_f64().unwrap_or(f64::NAN));
+        if (mid[2] - start[2]).abs() < 1e-9 && (start[2] - end[2]).abs() < 1e-9 {
+            round += 1;
+            assert!((mid[0].hypot(mid[1]) - 4.0).abs() < 1e-9, "middle {mid:?} off the r 4 circle: {e}");
+            assert!((length - 8.0 * PI).abs() < 1e-9 || (length - 4.0 * PI).abs() < 1e-9, "length {length}: {e}");
+        } else {
+            seams += 1;
+            assert!((length - 20.0).abs() < 1e-9 && (mid[2] - 10.0).abs() < 1e-9 && (mid[0].hypot(mid[1]) - 4.0).abs() < 1e-9, "{e}");
+        }
+    }
+    assert!(round >= 2 && seams >= 1, "{r}");
+}

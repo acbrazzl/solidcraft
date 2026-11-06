@@ -1294,6 +1294,17 @@ impl Body {
             .collect())
     }
 
+    /// Each edge's length and the point half-way along it by length, both on its exact curve
+    /// (index = the record's edge index), where [`Body::edges`] measures a polyline: its middle
+    /// lies off a curved edge by up to the chord tolerance, so it picks the edge only within that.
+    /// `None` for an edge whose curve does not evaluate; empty for a mesh body.
+    pub fn exact_edge_mids(&self) -> Vec<Option<(Vec3, f64)>> {
+        if self.is_mesh() {
+            return Vec::new();
+        }
+        self.record.edges.iter().map(exact_mid).collect()
+    }
+
     /// How far [`Body::planar_edges`] lets a piece it reads as a line or an arc lie from the
     /// edge's curve (a NURBS within this of a circle is that arc), so how far a piece's ends may
     /// lie from the edge's vertices.
@@ -1603,3 +1614,44 @@ mod display_mesh_tests;
 #[cfg(test)]
 #[path = "regularization_protection_tests.rs"]
 mod regularization_protection_tests;
+
+/// Gauss panels an edge's length is integrated in, for [`exact_mid`].
+const LENGTH_PANELS: usize = 64;
+
+/// An edge's length (8-point Gauss–Legendre on [`LENGTH_PANELS`] panels of its interval) and the
+/// point half-way along it by length (the panel holding it, then bisection), on the curve the
+/// edge is parameterised on: its NURBS form where it has one, else its curve.
+fn exact_mid(e: &brep::Edge) -> Option<(Vec3, f64)> {
+    let c = solidcraft_geom::brep::eval::CurveEval::new(e.nurbs.as_ref().unwrap_or(&e.curve)).ok()?;
+    let [t0, t1] = e.interval;
+    if !(t1 > t0) {
+        return None;
+    }
+    let speed = |t: f64| c.derivs(t).map(|(_, d)| d.len());
+    let between = |a: f64, b: f64| -> Option<f64> {
+        let (m, h) = (0.5 * (a + b), 0.5 * (b - a));
+        solidcraft_geom::bspline::GAUSS_8.iter().try_fold(0.0, |sum, (x, w)| Some(sum + w * h * speed(m + h * x)?))
+    };
+    let at = |k: usize| t0 + (t1 - t0) * k as f64 / LENGTH_PANELS as f64;
+    let mut table = vec![0.0];
+    for k in 0..LENGTH_PANELS {
+        table.push(table.last().copied()? + between(at(k), at(k + 1))?);
+    }
+    let length = table.last().copied()?;
+    if !(length.is_finite() && length > 0.0) {
+        return None;
+    }
+    let half = 0.5 * length;
+    let k = table.partition_point(|l| *l <= half).saturating_sub(1).min(LENGTH_PANELS - 1);
+    let (mut a, mut b, want) = (at(k), at(k + 1), half - table.get(k).copied()?);
+    let a0 = a;
+    for _ in 0..60 {
+        let m = 0.5 * (a + b);
+        if between(a0, m)? < want {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    Some((c.point(0.5 * (a + b))?, length))
+}

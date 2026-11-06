@@ -454,15 +454,22 @@ fn model_edges(s: &mut Session, p: &Value) -> Result<Value> {
     let b = body_of(&st, p, "model.edges")?;
     let tol = (b.body.size() * 2e-3).max(1e-3);
     let names = solidcraft_doc::naming::edge_names(b);
+    // The middle and length on each edge's exact curve: the polyline's middle lies off a curved
+    // edge by up to the chord tolerance, so as a pick it would miss the edge by that much.
+    let exact = b.body.exact_edge_mids();
     let edges = b
         .body
         .edges(tol)?
         .iter()
-        .map(|e| ModelEdge {
+        .map(|e| {
+            let (mid, length) = exact.get(e.index).copied().flatten().unwrap_or((e.mid, e.length));
+            (e, mid, length)
+        })
+        .map(|(e, mid, length)| ModelEdge {
             index: e.index,
             name: names.get(e.index).cloned(),
-            mid: e.mid.into(),
-            length: e.length,
+            mid: mid.into(),
+            length,
             start: e.points.first().map(|&p| p.into()),
             end: e.points.last().map(|&p| p.into()),
         })
