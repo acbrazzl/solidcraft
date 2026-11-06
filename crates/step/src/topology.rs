@@ -533,6 +533,9 @@ struct Builder<'b, 'a> {
     sense_mismatches: usize,
     /// Edges whose tolerance was raised to the gap their curve has to a face's surface.
     raised_edges: HashSet<u32>,
+    /// Faces taken out of their shells after they were read ([`Builder::join_lens_faces`]): in
+    /// no shell, so in no record.
+    taken_out: HashSet<u32>,
 }
 
 impl<'b, 'a> Builder<'b, 'a> {
@@ -551,6 +554,7 @@ impl<'b, 'a> Builder<'b, 'a> {
             faces: Vec::new(),
             sense_mismatches: 0,
             raised_edges: HashSet::new(),
+            taken_out: HashSet::new(),
         }
     }
 
@@ -941,9 +945,15 @@ impl<'b, 'a> Builder<'b, 'a> {
     }
 
     /// Pcurves, outer loops, domains and the canonical order: the finished record.
-    fn finish(mut self, item: u64, name: String, shells: Vec<Vec<(u32, bool)>>, kind: Kind) -> R<Solid> {
+    fn finish(mut self, item: u64, name: String, mut shells: Vec<Vec<(u32, bool)>>, kind: Kind) -> R<Solid> {
         let _span = solidcraft_profile::span("import", "step.solid_record");
         let mut notes = Vec::new();
+        let lenses = self.join_lens_faces(&mut shells)?;
+        if lenses > 0 {
+            notes.push(format!(
+                "{lenses} faces of zero width taken out (each bounded by two edges within their tolerance of each other); their edges joined"
+            ));
+        }
         // A face bounded by a slit alone is the whole of its closed surface, closed by its seams
         // (a sphere's frame put on the slit), before anything is measured on the frame or split
         // at its poles.
@@ -996,6 +1006,13 @@ impl<'b, 'a> Builder<'b, 'a> {
         let mut turned = vec![false; self.faces.len()];
         let (mut failed, mut first_failure) = (0usize, None);
         for fi in 0..self.faces.len() {
+            // A face taken out is in no record: nothing to trim.
+            if self.taken_out.contains(&index(fi)?) {
+                pcs.push(Vec::new());
+                domains.push([[0.0; 2]; 2]);
+                face_forms.push(None);
+                continue;
+            }
             match self.face_pcurves(fi) {
                 Ok((pc, domain, flipped, form)) => {
                     face_forms.push(form);
@@ -1282,6 +1299,79 @@ impl<'b, 'a> Builder<'b, 'a> {
             }
         }
         count.values().all(|n| *n >= 2)
+    }
+
+    /// Take out every face of zero width and join its two edges. Such a face has one loop of two
+    /// different edges between the same two vertices that lie on each other within their
+    /// tolerance (a lens a fillet's corner can leave, a fraction of a millimetre long and a
+    /// micron wide), on a plane or on a bounded surface every point of which lies within that
+    /// tolerance of the edges, so it cannot be a surface the loop winds round (a slit on a ball
+    /// is [`Builder::complete_slits`]'s). At the file's own precision it bounds nothing and
+    /// its two edges are one edge. Left in, its loop encloses no (u, v) area and the face is
+    /// refused, which leaves the solid open. So the face is taken out of its shells, every other
+    /// use of its second edge uses the first instead (turned where the two run opposite ways),
+    /// and the first edge's tolerance is raised to their gap. Returns how many faces were taken
+    /// out.
+    fn join_lens_faces(&mut self, shells: &mut [Vec<(u32, bool)>]) -> R<usize> {
+        let mut joined = 0;
+        let in_shells: Vec<u32> = {
+            let mut fs: Vec<u32> = shells.iter().flatten().map(|(f, _)| *f).collect();
+            fs.sort_unstable();
+            fs.dedup();
+            fs
+        };
+        for f in in_shells {
+            let Some(face) = self.faces.get(f as usize) else { continue };
+            let [LoopB::Edges(es)] = face.loops.as_slice() else { continue };
+            let [(a, _), (b, _)] = es.as_slice() else { continue };
+            let (a, b) = (*a, *b);
+            if a == b {
+                continue;
+            }
+            let (Some(ea), Some(eb)) = (self.edges.get(a as usize), self.edges.get(b as usize)) else { continue };
+            let [a0, a1] = ea.vertices;
+            let [b0, b1] = eb.vertices;
+            if a0 == a1 {
+                continue;
+            }
+            let opposite = match (a0 == b0 && a1 == b1, a0 == b1 && a1 == b0) {
+                (true, _) => false,
+                (_, true) => true,
+                _ => continue,
+            };
+            let reach = ea.tolerance.max(eb.tolerance);
+            let (Some(pa), Some(pb)) = (edge_samples(ea), edge_samples(eb)) else { continue };
+            let gap = polyline_gap(&pa, &pb).max(polyline_gap(&pb, &pa));
+            if !(gap <= reach) || !surface_within(&face.surface, &pa, reach) {
+                continue;
+            }
+            // Every other face using the second edge, none of them using the first as well.
+            let users: Vec<usize> =
+                (0..self.faces.len()).filter(|&g| g != f as usize).filter(|&g| self.faces.get(g).is_some_and(|x| uses_edge(x, b))).collect();
+            if users.iter().any(|&g| self.faces.get(g).is_some_and(|x| uses_edge(x, a))) {
+                continue;
+            }
+            for g in users {
+                let Some(x) = self.faces.get_mut(g) else { continue };
+                for l in &mut x.loops {
+                    if let LoopB::Edges(es) = l {
+                        for (e, fwd) in es.iter_mut().filter(|(e, _)| *e == b) {
+                            *e = a;
+                            *fwd ^= opposite;
+                        }
+                    }
+                }
+            }
+            if let Some(e) = self.edges.get_mut(a as usize) {
+                e.tolerance = e.tolerance.max(gap);
+            }
+            for s in shells.iter_mut() {
+                s.retain(|(g, _)| *g != f);
+            }
+            self.taken_out.insert(f);
+            joined += 1;
+        }
+        Ok(joined)
     }
 
     /// The face's loops, outer first (the rest in the file's order).
@@ -1926,3 +2016,57 @@ fn project(c: &CurveEval, a: f64, b: f64, knots: &[f64], p: Vec3) -> Option<f64>
 #[cfg(test)]
 #[path = "topology_tests.rs"]
 mod tests;
+
+/// Whether face `f` uses edge `e` in any of its loops.
+fn uses_edge(f: &FaceB, e: u32) -> bool {
+    f.loops.iter().any(|l| matches!(l, LoopB::Edges(es) if es.iter().any(|(x, _)| *x == e)))
+}
+
+/// Samples along each edge, for [`edge_samples`].
+const GAP_SAMPLES: usize = 64;
+
+/// Samples of a bounded surface along each parameter, for [`surface_within`].
+const SURFACE_SAMPLES: usize = 8;
+
+/// The edge at [`GAP_SAMPLES`] + 1 even steps of its interval; `None` where it cannot be
+/// evaluated.
+fn edge_samples(e: &EdgeB) -> Option<Vec<Vec3>> {
+    let c = CurveEval::new(&e.curve).ok()?;
+    let [lo, hi] = e.interval;
+    (0..=GAP_SAMPLES).map(|k| c.point(lo + (hi - lo) * k as f64 / GAP_SAMPLES as f64)).collect()
+}
+
+/// The distance from point `p` to the polyline through `poly`.
+fn to_polyline(p: Vec3, poly: &[Vec3]) -> f64 {
+    poly.windows(2)
+        .map(|w| {
+            let (s, e) = (w[0], w[1]);
+            let d = e - s;
+            let len2 = d.dot(d);
+            let t = if len2 > 0.0 { ((p - s).dot(d) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            p.dist(s + d * t)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The largest distance from a point of `from` to the polyline through `to`.
+fn polyline_gap(from: &[Vec3], to: &[Vec3]) -> f64 {
+    from.iter().map(|p| to_polyline(*p, to)).fold(0.0, f64::max)
+}
+
+/// Whether `surface` is a plane (which cannot close on itself), or bounded with every point of
+/// a [`SURFACE_SAMPLES`] grid over its whole parameter box within `reach` of the polyline `near`.
+fn surface_within(surface: &BSurface, near: &[Vec3], reach: f64) -> bool {
+    if matches!(surface, BSurface::Plane { .. } | BSurface::PlaneThrough { .. }) {
+        return true;
+    }
+    let Ok(eval) = SurfaceEval::new(surface) else { return false };
+    let [Some((u0, u1)), Some((v0, v1))] = eval.domain().range else { return false };
+    let n = SURFACE_SAMPLES as f64;
+    (0..=SURFACE_SAMPLES).all(|i| {
+        (0..=SURFACE_SAMPLES).all(|j| {
+            let uv = [u0 + (u1 - u0) * i as f64 / n, v0 + (v1 - v0) * j as f64 / n];
+            eval.point(uv).is_some_and(|p| to_polyline(p, near) <= reach)
+        })
+    })
+}

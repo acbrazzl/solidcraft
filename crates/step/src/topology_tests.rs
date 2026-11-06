@@ -78,11 +78,15 @@ impl W {
     }
     /// The file: millimetres, radians, an uncertainty of 1e-7 mm, every item in one
     /// representation.
-    fn file(mut self, items: &[u64]) -> p21::Exchange {
+    fn file(self, items: &[u64]) -> p21::Exchange {
+        self.file_with(items, 1e-7)
+    }
+    /// [`W::file`] with an uncertainty of `uncertainty` mm.
+    fn file_with(mut self, items: &[u64], uncertainty: f64) -> p21::Exchange {
         let l = self.add("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
         let a = self.add("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
         let s = self.add("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
-        let u = self.add(format!("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#{l},'distance_accuracy_value','')"));
+        let u = self.add(format!("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE({}),#{l},'distance_accuracy_value','')", real(uncertainty)));
         let c = self.add(format!(
             "(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{u}))GLOBAL_UNIT_ASSIGNED_CONTEXT((#{l},#{a},#{s}))REPRESENTATION_CONTEXT('',''))"
         ));
@@ -1236,4 +1240,86 @@ fn parabola_and_hyperbola_edges_bound_faces() {
             assert!(on.abs() < 1e-12, "{kind}: {p:?}");
         }
     }
+}
+
+/// The 10 x 20 x 30 box whose edge from (10, 0, 0) to (10, 0, 30) is written twice: a straight
+/// edge for the front face (y = 0) and a second edge between the same two vertices for the right
+/// face (x = 10), bowed out along the corner's bisector by `bow` at its control point (0 for a
+/// second straight line), and a lens face on the plane through that edge between them, bounded
+/// by the two. The file's uncertainty is `uncertainty`.
+fn lens_box(bow: f64, uncertainty: f64) -> p21::Exchange {
+    let mut w = W::default();
+    let corner = |i: usize| -> V { [if i & 1 == 0 { 0.0 } else { 10.0 }, if i & 2 == 0 { 0.0 } else { 20.0 }, if i & 4 == 0 { 0.0 } else { 30.0 }] };
+    let vs: Vec<(u64, V)> = (0..8).map(|i| (w.vertex(corner(i)), corner(i))).collect();
+    let mut edges: std::collections::HashMap<(usize, usize), u64> = Default::default();
+    let mut edge = |w: &mut W, p: usize, q: usize| -> (u64, bool) {
+        let key = (p.min(q), p.max(q));
+        let e = *edges.entry(key).or_insert_with(|| w.line_edge(vs[key.0], vs[key.1], true, 1.0));
+        (e, p == key.0)
+    };
+    // The second edge, (10, 0, 0) to (10, 0, 30), for the right face.
+    let second = if bow == 0.0 {
+        w.line_edge(vs[1], vs[5], true, 1.0)
+    } else {
+        let (a, m, c) = (w.pt(corner(1)), w.pt([10.0 + bow, -bow, 15.0]), w.pt(corner(5)));
+        let s = w.add(format!("B_SPLINE_CURVE_WITH_KNOTS('',2,(#{a},#{m},#{c}),.UNSPECIFIED.,.F.,.F.,(3,3),(0.,1.),.UNSPECIFIED.)"));
+        w.add(format!("EDGE_CURVE('',#{},#{},#{s},.T.)", vs[1].0, vs[5].0))
+    };
+    // Each face's corners counter-clockwise seen from outside, its outward normal and x axis.
+    let faces: [([usize; 4], V, V); 6] = [
+        ([0, 2, 3, 1], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]),
+        ([4, 5, 7, 6], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+        ([0, 1, 5, 4], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]),
+        ([2, 6, 7, 3], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        ([0, 4, 6, 2], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([1, 3, 7, 5], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ];
+    let mut ids = Vec::new();
+    for (k, (ring, n, x)) in faces.iter().enumerate() {
+        let mut oes = Vec::new();
+        for i in 0..4 {
+            let (p, q) = (ring[i], ring[(i + 1) % 4]);
+            // The right face runs from (10, 0, 30) down to (10, 0, 0) along the second edge.
+            let (e, fwd) = if k == 5 && (p, q) == (5, 1) { (second, false) } else { edge(&mut w, p, q) };
+            oes.push(w.oe(e, fwd));
+        }
+        let o = corner(ring[0]);
+        let bound = w.bound(&oes, true, true);
+        let plane = w.plane(o, *n, *x);
+        ids.push(w.face(&[bound], plane, true));
+    }
+    // The lens: down the front face's edge, up the second.
+    let (e, fwd) = edge(&mut w, 5, 1);
+    let (down, up) = (w.oe(e, fwd), w.oe(second, true));
+    let bound = w.bound(&[down, up], true, true);
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    let plane = w.plane(corner(1), [r, -r, 0.0], [0.0, 0.0, 1.0]);
+    ids.push(w.face(&[bound], plane, true));
+    let shell = closed_shell(&mut w, &ids);
+    let solid = w.add(format!("MANIFOLD_SOLID_BREP('lens box',#{shell})"));
+    w.file_with(&[solid], uncertainty)
+}
+
+#[test]
+fn a_face_of_zero_width_between_two_coincident_edges_is_taken_out_and_its_edges_joined() {
+    // Two straight edges on one line; then a quadratic bowed 7e-5 out at its control point (its
+    // middle 7e-5 * sqrt(2) / 2 = 4.95e-5 off the line) against an uncertainty of 1e-4: either
+    // way the lens bounds nothing, and the box is the box.
+    for (bow, uncertainty) in [(0.0, 1e-7), (7e-5, 1e-4)] {
+        let s = one_solid(&lens_box(bow, uncertainty));
+        assert_eq!(counts(&s.brep), [2, 1, 6, 12, 8], "bow {bow}");
+        assert!(s.notes.iter().any(|n| n.starts_with("1 faces of zero width taken out")), "bow {bow}: {:?}", s.notes);
+        faces_away(&s.brep, 0, |_| [5.0, 10.0, 15.0]);
+    }
+}
+
+#[test]
+fn a_lens_wider_than_its_edges_tolerance_is_not_taken_out() {
+    // Bowed 7e-3 out (its middle 4.95e-3 off the line), fifty times the file's 1e-4 uncertainty:
+    // the two edges are not one, so the face stays in, and its loop (flat in its plane) is
+    // refused as before rather than the face being taken out.
+    let r = read_solids(&lens_box(7e-3, 1e-4));
+    assert!(r.solids.is_empty());
+    let [f] = r.failures.as_slice() else { panic!("{:?}", r.failures) };
+    assert!(f.message.contains("loop encloses no (u, v) area"), "{}", f.message);
 }
