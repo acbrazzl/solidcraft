@@ -452,4 +452,26 @@ mod native_tests {
             }
         }
     }
+
+    /// A trim that ends a rounding past its edge, its last interior knot on the edge's end: moved
+    /// onto the edge, its end knots join that knot, and the run would be degree + 2. The point
+    /// weighted by nothing goes with one knot of the run, so the trim is a record (knots at most
+    /// degree + 1 deep) and the same curve on the edge's interval.
+    #[test]
+    fn a_trim_ending_a_rounding_past_its_edge_on_a_knot_keeps_its_runs_to_degree_plus_one() {
+        let d = 4e-10;
+        let points: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 2.0], [2.0, -1.0], [3.0, 1.5], [4.0, 0.5], [5.0, 2.5]];
+        let trim = b::Curve2::Spline { knots: vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0 + d, 1.0 + d, 1.0 + d, 1.0 + d], points };
+        let moved = mapped(&trim, true, [1.0, 0.0], [0.0, 1.0]).unwrap();
+        let b::Curve2::Spline { knots, points } = &moved else { panic!("a spline") };
+        assert_eq!(knots, &[0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(points.len(), 5);
+        solidcore_record::brep::check_curve2(&moved, &mut solidcore_record::brep::Budget::input()).unwrap();
+        // The same curve on [0, 1], to the rounding the move is (d).
+        for i in 0..=100 {
+            let t = f64::from(i) / 100.0;
+            let (a, b) = (point2(&trim, t.min(1.0 - 1e-12)).unwrap(), point2(&moved, t.min(1.0 - 1e-12)).unwrap());
+            assert!((a[0] - b[0]).hypot(a[1] - b[1]) < 1e-8, "t {t}: {a:?} vs {b:?}");
+        }
+    }
 }

@@ -574,13 +574,37 @@ fn mapped(trim: &b::Curve2, same: bool, [scale, offset]: [f64; 2], [t0, t1]: [f6
     Ok(match trim {
         b::Curve2::Spline { knots, points } => {
             let (k, points) = along(knots, points, same);
-            b::Curve2::Spline { knots: map(k, points.len())?, points }
+            let (knots, points) = without_null_spans(map(k, points.len())?, points);
+            b::Curve2::Spline { knots, points }
         }
         b::Curve2::RationalSpline { knots, homogeneous } => {
             let (k, homogeneous) = along(knots, homogeneous, same);
-            b::Curve2::RationalSpline { knots: map(k, homogeneous.len())?, homogeneous }
+            let (knots, homogeneous) = without_null_spans(map(k, homogeneous.len())?, homogeneous);
+            b::Curve2::RationalSpline { knots, homogeneous }
         }
     })
+}
+
+/// A B-spline's knots and control points without the control points whose basis functions are
+/// zero (support `[k[j], k[j + degree + 1]]` of no length), one knot of that run going with each.
+/// Moving a trim's end knots onto its edge's interval end can close its last span: SMLib ends a
+/// trim a rounding past its edge, its last interior knot on the edge's end, and the end knots
+/// moved onto that knot make it one of more than degree + 1 (a 4.0 seven times over in a
+/// degree 4 trim). Each such point is weighted by nothing anywhere, so the curve stays the same;
+/// the run comes back to degree + 1, as a record's knots must be.
+fn without_null_spans<T>(mut knots: Vec<f64>, mut points: Vec<T>) -> (Vec<f64>, Vec<T>) {
+    let Some(order) = knots.len().checked_sub(points.len()) else { return (knots, points) };
+    let mut j = 0;
+    while j < points.len() && points.len() > order {
+        match (knots.get(j), knots.get(j + order)) {
+            (Some(a), Some(b)) if a == b => {
+                knots.remove(j);
+                points.remove(j);
+            }
+            _ => j += 1,
+        }
+    }
+    (knots, points)
 }
 
 /// A domain side or an edge's interval moved onto the natural range where it overshoots it by
