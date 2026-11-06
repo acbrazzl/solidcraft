@@ -390,6 +390,7 @@ pub(crate) fn fixes() -> UpstreamFixes {
     f.plane_first_torus_section_exact = true;
     f.keep_exact_pcurves = true;
     f.shell_one_construction = true;
+    f.boolean_stitches_operand_coincident_edges = true;
     f
 }
 
