@@ -391,6 +391,7 @@ pub(crate) fn fixes() -> UpstreamFixes {
     f.keep_exact_pcurves = true;
     f.shell_one_construction = true;
     f.boolean_stitches_operand_coincident_edges = true;
+    f.offset_edge_replaced_when_interior_moves = true;
     f
 }
 
