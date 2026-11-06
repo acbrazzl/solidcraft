@@ -406,6 +406,43 @@ fn arc_corners(lp: &Loop2, moved: Vec<Seg2>) -> Result<Vec<Seg2>> {
         .collect()
 }
 
+/// Where the line through `p` along `t` crosses the circle (`c`, `r`), the crossing nearest
+/// `near`; `None` when the line misses the circle.
+fn line_circle(p: Vec2, t: Vec2, c: Vec2, r: f64, near: Vec2) -> Option<Vec2> {
+    let tt = t.dot(t);
+    if tt <= 0.0 {
+        return None;
+    }
+    // |p + s t - c|^2 = r^2
+    let w = p - c;
+    let (b, cc) = (w.dot(t) / tt, (w.dot(w) - r * r) / tt);
+    let disc = b * b - cc;
+    if disc < -1e-12 {
+        return None;
+    }
+    let root = disc.max(0.0).sqrt();
+    let (x1, x2) = (p + t * (-b - root), p + t * (-b + root));
+    Some(if x1.dist(near) <= x2.dist(near) { x1 } else { x2 })
+}
+
+/// `arc` (its centre and radius kept) from `a` to `b`, both on its circle, turning the same way
+/// as before over the whole-turn equivalent nearest its old sweep; `None` where that would
+/// reverse or vanish (the taper closes it).
+fn trimmed_arc(arc: &Seg2, a: Vec2, b: Vec2) -> Option<Seg2> {
+    let Seg2::Arc { center, radius, sweep, .. } = *arc else { return None };
+    if ((a - center).len() - radius).abs() > 1e-6 * radius.max(1.0) || ((b - center).len() - radius).abs() > 1e-6 * radius.max(1.0) {
+        return None;
+    }
+    let tau = std::f64::consts::TAU;
+    let a0 = (a - center).angle();
+    let mut sw = (b - center).angle() - a0;
+    sw += ((sweep - sw) / tau).round() * tau;
+    if sw * sweep <= 0.0 || sw.abs() < 1e-9 {
+        return None;
+    }
+    Some(Seg2::Arc { center, radius, start: a0, sweep: sw })
+}
+
 /// Where the circles (`c1`, `r1`) and (`c2`, `r2`) cross, the crossing nearest `near`; `None`
 /// when they don't (apart, one inside the other, or concentric).
 fn circles_cross(c1: Vec2, r1: f64, c2: Vec2, r2: f64, near: Vec2) -> Option<Vec2> {
@@ -583,11 +620,17 @@ fn offset_curve(s: &Seg2, a: Vec2, b: Vec2, d: f64) -> Option<Seg2> {
 /// tangents to where they meet; where they run into each other (a corner the offset goes into)
 /// both are cut where they cross. A line shorter than the offset can turn around between its
 /// moved neighbours (the flat tip of a letter's stroke): it goes, and its neighbours meet. An arc
-/// has to meet its neighbours tangentially: at a corner its side would meet the next one along a
-/// conic, not a straight ruling.
+/// at a sharp corner meets its moved neighbour (a line or another arc) where they cross, nearest
+/// the corner: its cone and the neighbour's wall each continue as themselves and meet along a
+/// conic, whose point at this height that crossing is. A free curve at such a corner is refused.
 fn offset_segments(lp: &Loop2, d: f64) -> Result<Vec<Option<Seg2>>> {
     let closes = || KernelError::Invalid("the taper closes the profile".into());
-    let at_corner = || KernelError::Failed("not supported yet: tapered profiles where an arc meets another edge at a corner".into());
+    let at_corner = || KernelError::Failed("not supported yet: tapered profiles where a free curve meets an arc at a corner".into());
+    let apart = || {
+        KernelError::Failed(
+            "not supported yet: a taper this steep for an arc meeting another edge at a corner (the moved arc and its neighbour part)".into(),
+        )
+    };
     let bad = || KernelError::Failed("taper: profile loop".into());
     let right = |t: Vec2| Vec2::new(t.y, -t.x);
     let n = lp.segs.len();
@@ -642,6 +685,22 @@ fn offset_segments(lp: &Loop2, d: f64) -> Result<Vec<Option<Seg2>>> {
                     let m = mitre(prev.end(), tin, s.start(), tout, d);
                     (m, m)
                 }
+                // An arc at a sharp corner: each wall continues as itself (the arc's cone, the
+                // neighbour's plane or cone), so in this section the moved arc and the moved
+                // neighbour meet where they cross, the crossing nearest the corner. A free curve
+                // there has no closed-form crossing and stays refused.
+                (Some(Seg2::Arc { center: c1, radius: r1, .. }), Some(Seg2::Arc { center: c2, radius: r2, .. })) => {
+                    let x = circles_cross(*c1, *r1, *c2, *r2, s.start()).ok_or_else(apart)?;
+                    (x, x)
+                }
+                (Some(Seg2::Arc { center, radius, .. }), None) if matches!(s, Seg2::Line { .. }) => {
+                    let x = line_circle(s.start() + right(tout) * d, tout, *center, *radius, s.start()).ok_or_else(apart)?;
+                    (x, x)
+                }
+                (None, Some(Seg2::Arc { center, radius, .. })) if matches!(prev, Seg2::Line { .. }) => {
+                    let x = line_circle(prev.end() + right(tin) * d, tin, *center, *radius, s.start()).ok_or_else(apart)?;
+                    (x, x)
+                }
                 _ => return Err(at_corner()),
             };
             if let (Some(e), Some(st)) = (ends.get_mut(k), starts.get_mut(i)) {
@@ -652,12 +711,7 @@ fn offset_segments(lp: &Loop2, d: f64) -> Result<Vec<Option<Seg2>>> {
         for &i in &kept {
             let (Some(s), Some(m), Some(&a), Some(&b)) = (lp.segs.get(i), moved.get(i), starts.get(i), ends.get(i)) else { return Err(bad()) };
             let piece = match (m, *s) {
-                (Some(arc), _) => {
-                    if arc.start().dist(a) > 1e-6 || arc.end().dist(b) > 1e-6 {
-                        return Err(at_corner());
-                    }
-                    *arc
-                }
+                (Some(arc), _) => trimmed_arc(arc, a, b).ok_or_else(closes)?,
                 (None, Seg2::Line { .. }) => Seg2::Line { a, b },
                 (None, Seg2::Arc { .. }) => return Err(bad()),
                 (None, curve) => offset_curve(&curve, a, b, d).ok_or_else(closes)?,

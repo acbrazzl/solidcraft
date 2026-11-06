@@ -698,6 +698,47 @@ fn tapered_extrude_closes_a_narrow_slot_and_refuses_a_closing_hole() {
     assert!(e.to_string().contains("the taper closes the profile"), "{e}");
 }
 
+/// A region with a hole, whose outline is a rectangle with a circle standing out of one side:
+/// the circle's arc meets the side at two sharp corners. Tapered either way, every wall leans by
+/// the taper on the material's side and continues as itself to its neighbours, so the section
+/// at height z is the rectangle and the disc each moved by δ = −z·tan(taper) (in, for an inward
+/// taper), still joined where the moved arc crosses the moved side, less the hole grown by δ.
+/// The hole's check needs that section; the corner used to be refused there.
+#[test]
+fn tapered_extrude_of_a_holed_region_with_an_arc_at_a_corner() {
+    let (h, rb) = (5.0, 2.0);
+    let outer = Loop2 {
+        segs: vec![
+            Seg2::Arc { center: Vec2::new(10.0, 0.0), radius: rb, start: -PI / 2.0, sweep: PI },
+            Seg2::Line { a: Vec2::new(10.0, 2.0), b: Vec2::new(10.0, 5.0) },
+            Seg2::Line { a: Vec2::new(10.0, 5.0), b: Vec2::new(-10.0, 5.0) },
+            Seg2::Line { a: Vec2::new(-10.0, 5.0), b: Vec2::new(-10.0, -5.0) },
+            Seg2::Line { a: Vec2::new(-10.0, -5.0), b: Vec2::new(10.0, -5.0) },
+            Seg2::Line { a: Vec2::new(10.0, -5.0), b: Vec2::new(10.0, -2.0) },
+        ],
+    };
+    let region = Region2 { outer, holes: vec![Loop2::circle(Vec2::new(-4.0, 0.0), 2.0).reversed()] };
+    // The section's area, the outline moved in by d (out where d < 0): the rectangle and the disc
+    // (radius ρ = 2 − d) less the part of the disc inside the rectangle (x < 10 − d), less the
+    // hole (radius 2 + d).
+    let area = |d: f64| {
+        let rho = rb - d;
+        let inside = rho * rho * (d / rho).acos() - d * (rho * rho - d * d).sqrt();
+        (20.0 - 2.0 * d) * (10.0 - 2.0 * d) + PI * rho * rho - inside - PI * (2.0 + d) * (2.0 + d)
+    };
+    for deg in [-3.0f64, 3.0] {
+        let a = deg.to_radians();
+        let b = extrude_tapered(&Plane::XY, &region, h, 1.0, a, crate::DraftCorner::default()).unwrap();
+        assert!(b.validity().is_empty(), "{deg}: {:?}", b.validity());
+        // Simpson's rule on the closed-form section area.
+        let k = 2000;
+        let f = |j: usize| area(-(j as f64) * h / k as f64 * a.tan());
+        let v = (f(0) + f(k) + (1..k).map(|j| f(j) * if j % 2 == 1 { 4.0 } else { 2.0 }).sum::<f64>()) * h / k as f64 / 3.0;
+        let m = measure(&b).unwrap();
+        assert!(rel(m.volume, v) < 1e-6, "{deg}: {} vs {v}", m.volume);
+    }
+}
+
 #[test]
 fn polyhedra_shell_and_draft() {
     let b = box_solid(Vec3::ZERO, Vec3::new(50.0, 40.0, 30.0)).unwrap();
