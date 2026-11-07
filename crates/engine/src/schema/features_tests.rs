@@ -39,6 +39,7 @@ fn schemas_and_the_key_check_agree() {
             "sketch",
             "start_offset",
             "taper",
+            "taper2",
             "targets",
             "thickness",
             "thickness2",

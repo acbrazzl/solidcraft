@@ -112,8 +112,11 @@ and is smoothed over. A taper steeper than the profile's details (a stroke, a cu
 narrower than it) is refused with that reason; a smaller taper or distance builds. A taper
 composes with a start offset (a drafted pocket that starts part way up a part): the offset moves
 the profile along the normal and the sides are drafted from there, so the profile is the section
-at the start whatever the offset. A taper with a two-sided or symmetric extent is not built yet
-and says so.
+at the start whatever the offset. On a two-sided or symmetric extent each side is drafted from
+the profile by its own angle: `taper` for the first side, `taper2` for the second (each growing
+the profile going away from the start plane when positive). Without `taper2` a symmetric
+extrude's sides mirror each other and a two-sided one's second side stands straight; a second
+angle that is the first negated continues one cone through the profile, with no seam there.
 
 **Thin Extrude** (`thin: true` on `solid.extrude`, the Thin Extrude box in its dialog) builds a
 wall of constant thickness along sketch curves instead of filling profiles: open chains (a single

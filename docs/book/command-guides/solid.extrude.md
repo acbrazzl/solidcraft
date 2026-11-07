@@ -47,8 +47,13 @@ body. For example, a rectangle extruded 20 mm becomes a rectangular block.
 - **Don't** assume a symmetric distance is the distance on each side. New
   symmetric extrusions use the total distance; older saved designs can retain
   their earlier convention.
-- Taper with a two-sided or symmetric extent is not supported. A very steep
-  taper can also be refused rather than creating an invalid result.
+- On a two-sided or symmetric extent each side is tapered from the profile: `taper`
+  for the first side and `taper2` for the second, each growing the profile going away
+  from the sketch plane when positive. Without `taper2`, a symmetric extrusion's sides
+  mirror each other and a two-sided one's second side stands straight. A second side
+  tapered the other way (`taper2` the negative of `taper`) continues one cone through
+  the profile. A very steep taper can also be refused rather than creating an invalid
+  result.
 
 #### Examples and community resources
 
