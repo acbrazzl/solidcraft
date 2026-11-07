@@ -310,10 +310,23 @@ fn blend_failure(s: &FilletSession<'_>, e: SolidError, corner: bool) -> (Error, 
             FitKind::Scale => crate::FitKind::Scale,
             FitKind::Chord => crate::FitKind::Chord,
         };
-        (Error::TooLarge { size: fit.size, kind, at: None, why: reason.and_then(room_reason) }, fit.edge)
+        let why = reason.and_then(room_reason);
+        // without a reason SolidCraft names, solidcore's own words (an end overflow, say)
+        let detail = if why.is_none() { solver_words(&info.comment) } else { None };
+        (Error::TooLarge { size: fit.size, kind, at: None, why, detail }, fit.edge)
     } else {
         (blend_failure_unsized(info, e, corner), None)
     }
+}
+
+/// solidcore's comment on a refused blend without its "Fillet Error:" / "Fillet Solver Error:"
+/// prefix; `None` when it said nothing.
+pub(crate) fn solver_words(comment: &str) -> Option<String> {
+    let w = comment.trim();
+    let w = ["Fillet Solver Error:", "Fillet Error:"].iter().find_map(|p| w.strip_prefix(p)).map_or(w, str::trim_start);
+    // the size it ends with is said again, exactly, by the caller ("the largest ... that fits")
+    let w = w.split(": a radius below").next().unwrap_or(w).trim_end();
+    (!w.is_empty()).then(|| w.to_owned())
 }
 
 /// solidcore's reason for a blend too large, as SolidCraft words it; `None` for the reasons it
@@ -364,7 +377,11 @@ fn blend_failure_unsized(info: &ErrorInfo<FilletObject>, e: SolidError, corner: 
     } else if corner || info.code == FilletErrorType::CornerUnsupported as i32 {
         Error::CornerUnsupported
     } else if info.code != FilletErrorType::NoRoom as i32 {
-        status(e)
+        // the solver's own words, where it gave any, with the status
+        match (status(e), solver_words(&info.comment)) {
+            (Error::Status(s), Some(why)) => Error::Explained { status: s, why },
+            (other, _) => other,
+        }
     } else if info.no_room_reason() == Some(NoRoomReason::RailLeavesFace) {
         Error::Unsupported
     } else {
@@ -377,7 +394,8 @@ fn blend_failure_unsized(info: &ErrorInfo<FilletObject>, e: SolidError, corner: 
 /// Where the edge or its point can't be read the size stays as it is, with no point (a chamfer's
 /// size then is not a distance, so it is left a plain refusal).
 fn sized_on(k: &Kernel, b: &mut Brep, edge: Option<EdgeId>, section: Section<'_>, e: Error) -> solidcore::Result<Error> {
-    let Error::TooLarge { size, kind, why, .. } = e else { return Ok(e) };
+    let Error::TooLarge { size, kind, why, ref detail, .. } = e else { return Ok(e) };
+    let detail = detail.clone();
     let Some(edge) = edge else {
         return Ok(if matches!(section, Section::Chamfer(_)) && kind == crate::FitKind::Radius { Error::NoRoom } else { e });
     };
@@ -391,11 +409,11 @@ fn sized_on(k: &Kernel, b: &mut Brep, edge: Option<EdgeId>, section: Section<'_>
     if matches!(section, Section::Chamfer(_)) && kind == crate::FitKind::Radius {
         // The ball's radius is linear in the chamfer's distance along an edge.
         return Ok(match chamfer_radius(k, b, edge, 1.0)? {
-            Some(per_mm) => Error::TooLarge { size: size / per_mm, kind: crate::FitKind::Distance, at, why },
+            Some(per_mm) => Error::TooLarge { size: size / per_mm, kind: crate::FitKind::Distance, at, why, detail },
             None => Error::NoRoom,
         });
     }
-    Ok(Error::TooLarge { size, kind, at, why })
+    Ok(Error::TooLarge { size, kind, at, why, detail })
 }
 
 /// `round_edges`' `overflow_first` argument: with it the session stops, nothing built, when blends

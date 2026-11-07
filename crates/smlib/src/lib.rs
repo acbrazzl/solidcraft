@@ -53,7 +53,10 @@ pub enum Error {
     /// A blend larger than its faces allow, refused with the largest size that builds it
     /// (solidcore's fit, `SolidError::FilletRefused`): the size, what it sizes, a point at the
     /// middle of the edge it was found for, and why there is no room, when the refusal names them.
-    TooLarge { size: f64, kind: FitKind, at: Option<[f64; 3]>, why: Option<RoomReason> },
+    TooLarge { size: f64, kind: FitKind, at: Option<[f64; 3]>, why: Option<RoomReason>, detail: Option<String> },
+    /// SMLib failed with a status and said why (the blend solver's own words, e.g. a rollover it
+    /// cannot process).
+    Explained { status: i32, why: String },
     /// A shell, offset or thicken whose wall is thicker than a face curves: the face's offset
     /// folds (solidcore's `ShellRefused`, `ShellRefusal::Fold`). The largest wall that works,
     /// when solidcore names one.
@@ -172,6 +175,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::Status(1007) => write!(f, "SMLib rejected the input (SM_ERR_INVALID_INPUT)"),
             Error::Status(s) => write!(f, "SMLib failed (status {s})"),
+            Error::Explained { status, why } => write!(f, "SMLib failed (status {status}): {why}"),
             Error::Argument => write!(f, "invalid argument for SMLib"),
             Error::Empty => write!(f, "SMLib returned an empty body"),
             Error::NotSolid => write!(f, "SMLib's result is not a closed solid"),
@@ -179,13 +183,15 @@ impl std::fmt::Display for Error {
             Error::Ambiguous { point } => write!(f, "selection point {} is equally near to two edges or faces", point + 1),
             Error::NoRoom => write!(f, "there is no room for it: an offset leaves none inside the body, or a blend is larger than its faces allow"),
             Error::WallsTouch => write!(f, "the offset's walls would meet along a line, which leaves no solid there"),
-            Error::TooLarge { size, kind, at, why } => {
+            Error::TooLarge { size, kind, at, why, detail } => {
                 write!(f, "the blend is larger than its faces allow")?;
                 if let Some([x, y, z]) = at {
                     write!(f, " at the edge at ({x:.3}, {y:.3}, {z:.3})")?;
                 }
                 if let Some(why) = why {
                     write!(f, ": {}", why.words())?;
+                } else if let Some(detail) = detail {
+                    write!(f, ": {detail}")?;
                 }
                 write!(f, "; the largest {} that fits is {size}", kind.word())
             }

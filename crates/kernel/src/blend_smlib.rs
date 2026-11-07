@@ -441,6 +441,12 @@ mod imp {
     ) -> Result<(Body, T, Option<solidcraft_smlib::history::Order>)> {
         guard(what, || {
             let (sb, order) = smlib_body_ordered(body)?;
+            // LOCAL DEBUG (not for upstream): SC_BLEND_DUMP_DIR keeps every blend's SMLib input.
+            if let Some(dir) = std::env::var_os("SC_BLEND_DUMP_DIR") {
+                static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let _ = sb.write(&std::path::Path::new(&dir).join(format!("{n:04}-{what}.smb")), false);
+            }
             let tagged = sb.tagged(0).map_err(|e| failed(what, "tag", e))?;
             let (r, extra) = op(&tagged).map_err(|e| match e {
                 SmError::Unsupported => super::unsupported(&format!("this {what}, which SMLib cannot build exactly")),
@@ -464,13 +470,15 @@ mod imp {
                     let at = at.map(|[x, y, z]| format!(" at ({x:.3}, {y:.3}, {z:.3})")).unwrap_or_default();
                     KernelError::Invalid(format!("the {what}'s swept corner{at} is not built: {why}"))
                 }
-                SmError::TooLarge { size, kind, at, why } => {
+                SmError::TooLarge { size, kind, at, why, detail } => {
                     let mut beside = match at {
                         Some([x, y, z]) => format!(", at the edge at ({x:.3}, {y:.3}, {z:.3})"),
                         None => String::new(),
                     };
                     if let Some(why) = why {
                         beside = format!("{beside}: {}", why.words());
+                    } else if let Some(detail) = detail {
+                        beside = format!("{beside}: {detail}");
                     }
                     let fits = match kind {
                         solidcraft_smlib::FitKind::Scale => {

@@ -388,6 +388,28 @@ fn draft_tilts_a_side_about_its_line_on_the_neutral_plane() {
     assert_untouched(&c, 8000.0, [6, 12, 8]);
 }
 
+/// A blend refused without a reason SolidCraft names keeps solidcore's own words (an end
+/// overflow, a rollover the solver cannot process), without its "Fillet Error:" prefix and
+/// without saying the size twice, rather than a bare "larger than its faces allow" or
+/// "SMLib failed (status 1001)".
+#[test]
+fn a_refused_blend_says_why_in_solidcores_words() {
+    let detail = crate::core::blend::solver_words(
+        "Fillet Error: the round's contact line runs past the end of its side edge at the corner (onto the faces beyond): a radius below 2.2 fits",
+    );
+    assert_eq!(detail.as_deref(), Some("the round's contact line runs past the end of its side edge at the corner (onto the faces beyond)"));
+    assert_eq!(crate::core::blend::solver_words("  "), None);
+    let e = Error::TooLarge { size: 2.2, kind: crate::FitKind::Radius, at: Some([1.0, 2.0, 3.0]), why: None, detail };
+    let words = e.to_string();
+    assert!(words.contains("runs past the end of its side edge") && words.contains("the largest radius that fits is 2.2"), "{words}");
+    assert!(!words.contains("a radius below"), "{words}");
+    let roll = Error::Explained {
+        status: 1001,
+        why: crate::core::blend::solver_words("Fillet Solver Error: Unable to Process Rollover").unwrap(),
+    };
+    assert_eq!(roll.to_string(), "SMLib failed (status 1001): Unable to Process Rollover");
+}
+
 /// The corner of r5 rounds at (60, 40, 20) on a 60 x 40 x 20 box, set back 8 and left open: the
 /// box's six faces and the three rounds (9 faces, 30 edges, 22 vertices), a sheet SMLib's check
 /// passes, and one hole of twelve edges (each section and face curve in two), chained end to
