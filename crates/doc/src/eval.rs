@@ -5345,7 +5345,7 @@ fn feature_tools_with_constructor(
             if let Some(tp) = &extent.taper {
                 let taper = val(vals, tp, Kind::Angle)?;
                 if extent.distance2.is_some() || extent.direction == crate::Direction::Symmetric {
-                    return Err(DocError::Invalid("not supported yet: taper with two-sided or symmetric extents".into()));
+                    return two_sided_tapered_tools(vals, extent, &ss, &regions, thin_roles.as_ref(), from, d, taper, warning);
                 }
                 let sign = if extent.to.is_none() && extent.direction == crate::Direction::Negative { -1.0 } else { 1.0 };
                 let (len, sign) = if d < 0.0 { (-d, -sign) } else { (d, sign) };
@@ -6146,6 +6146,91 @@ fn from_profile_on_closed_path(segs: Vec<solidcore_record::Seg2>, path: &Plane, 
     out.extend(from(k + 1).into_iter().take(n - 1));
     out.push(before);
     out
+}
+
+/// A taper on a Two Sides or Symmetric extrude: each side drafted from the profile, which is
+/// the section at the start. `taper` is the first side's angle (the side `direction` and
+/// `distance` go); `extent.taper2` the second side's, defaulting to `taper` when Symmetric (the
+/// two sides mirror each other about the start plane) and to 0 (straight) on Two Sides. Each
+/// angle grows the profile going away from the start plane when positive. Two sides that lean
+/// the same way through the profile (the second's angle the first's negated: one cone through
+/// it) are one tool with no seam at the profile; otherwise the two halves are joined.
+#[allow(clippy::too_many_arguments)]
+fn two_sided_tapered_tools(
+    vals: &BTreeMap<String, Value>,
+    extent: &crate::Extent,
+    ss: &SolvedSketch,
+    regions: &[Region2],
+    thin_roles: Option<&crate::lineage::ThinWallRoles>,
+    from: f64,
+    d: f64,
+    taper: f64,
+    warning: &mut Option<String>,
+) -> Result<Vec<Traced>> {
+    let taper2 = match &extent.taper2 {
+        Some(t) => val(vals, t, Kind::Angle)?,
+        None if extent.direction == crate::Direction::Symmetric => taper,
+        None => 0.0,
+    };
+    let direction = if extent.to.is_some() { crate::Direction::Positive } else { extent.direction };
+    // The signed reach of each side from the start, the first side's last (`extent_sides`).
+    let (second, first) = extent_sides(vals, extent, d, direction)?;
+    let base = from
+        + match &extent.start_offset {
+            Some(e) => val(vals, e, Kind::Length)?,
+            None => 0.0,
+        };
+    let (lo, hi) = if second <= first { (second, first) } else { (first, second) };
+    extrude_within_reach([base + lo, base + hi])?;
+    let start_plane = ss.plane.offset(base);
+    // Each side as (reach along the normal, angle): positive reach goes along the normal.
+    let sides = [(first, taper), (second, taper2)];
+    let caps = [Some(crate::lineage::extrude_cap_role(base + lo)), Some(crate::lineage::extrude_cap_role(base + hi))];
+    let mut notes = Vec::new();
+    let mut tools = Vec::new();
+    for r in regions {
+        let roles = crate::lineage::ProfileRoles { sketch: Some(ss), region: Some(r), caps: caps.clone(), thin: thin_roles };
+        let len = (hi - lo).abs();
+        let corner = match extent.corner {
+            Some(c) => c,
+            None => draft_corner_for(ss, r, len, taper.abs().max(taper2.abs()), &mut notes)?,
+        };
+        // One half per side with any length: along the normal (sign +1) or against it (-1),
+        // grown by its own angle going away from the profile.
+        let half = |reach: f64, angle: f64| -> Result<Option<Body>> {
+            if reach.abs() <= 1e-9 {
+                return Ok(None);
+            }
+            let sign = if reach < 0.0 { -1.0 } else { 1.0 };
+            Ok(Some(kernel::extrude_tapered_between(&start_plane, r, 0.0, reach.abs(), 0.0, sign, angle, corner)?))
+        };
+        // The second side continuing the first's cone through the profile: seen from the first
+        // side's direction its angle is the first's, so one tool from the far end of the second
+        // side runs straight through.
+        let one_cone = first * second < 0.0 && (taper2 + taper).abs() <= 1e-12;
+        let body = if one_cone {
+            let sign = if first < 0.0 { -1.0 } else { 1.0 };
+            kernel::extrude_tapered_between(&start_plane, r, -second.abs(), first.abs(), 0.0, sign, taper, corner)?
+        } else {
+            let mut halves = Vec::new();
+            for (reach, angle) in sides {
+                if let Some(b) = half(reach, angle)? {
+                    halves.push(b);
+                }
+            }
+            match halves.len() {
+                0 => return Err(DocError::Invalid("extrude distance is zero".into())),
+                1 => halves.remove(0),
+                _ => kernel::boolean(&halves[0], &halves[1], BoolOp::Union)?
+                    .ok_or_else(|| DocError::Invalid("the two tapered sides did not join".into()))?,
+            }
+        };
+        tools.push(roles.tool(body, None));
+    }
+    for note in notes {
+        append_warning(warning, note);
+    }
+    Ok(tools)
 }
 
 /// Where an extrude of distance `d` starts and ends along the sketch normal, before any start

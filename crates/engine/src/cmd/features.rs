@@ -1238,6 +1238,10 @@ pub(super) fn extent_param(s: &Session, p: &Value, cmd: &str) -> Result<Extent> 
     if let Some(t) = &taper {
         check_expr(s, t, Kind::Angle, cmd, "taper")?;
     }
+    let taper2 = expr(p, "taper2");
+    if let Some(t) = &taper2 {
+        check_expr(s, t, Kind::Angle, cmd, "taper2")?;
+    }
     let corner = match p.get("corner") {
         None => None,
         Some(value) => Some(serde_json::from_value(value.clone()).map_err(|_| bad(cmd, "`corner` must be preserve_curvature, tangent or round"))?),
@@ -1271,6 +1275,7 @@ pub(super) fn extent_param(s: &Session, p: &Value, cmd: &str) -> Result<Extent> 
         through_all,
         second_follows_first: false,
         taper,
+        taper2,
         corner,
         to: p.get("to").and_then(vec3).map(FacePick),
         to_offset: expr(p, "to_offset"),

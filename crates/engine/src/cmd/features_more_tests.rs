@@ -1793,14 +1793,56 @@ fn a_drafted_extrude_starts_at_an_offset() {
         }
     }
 
-    // The extents that are still to come are refused, and say which they are.
-    for p in [json!({"distance":h,"distance2":5,"taper":"6 deg"}), json!({"distance":h,"direction":"symmetric","taper":"6 deg"})] {
+}
+
+/// A taper on a Two Sides or Symmetric extrude drafts each side from the profile, the section
+/// at the start plane, each by its own angle (positive grows the profile going away from the
+/// plane). Symmetric mirrors one angle; Two Sides leaves the second side straight unless
+/// `taper2` is given; a second angle that is the first negated continues one cone through the
+/// profile, with no seam there. Each side is a frustum over the profile:
+/// V(L, t) = w*d*L + (w + d)*t*L^2 + 4/3*t^2*L^3, exact for flat walls (#12211).
+#[test]
+fn a_taper_drafts_each_side_of_a_two_sided_or_symmetric_extrude() {
+    use solidcraft_kernel::{FaceSurface, face_surface, measure as measure_body};
+    let (w, d, h, h2) = (30.0, 20.0, 12.0, 5.0);
+    let frustum = |len: f64, deg: f64| {
+        let t = deg.to_radians().tan();
+        w * d * len + (w + d) * t * len * len + 4.0 / 3.0 * t * t * len * len * len
+    };
+    let part = |p: Value| -> Session {
         let mut s = Session::default();
         run(&mut s, "sketch.create", json!({"plane":"XY"}));
         run(&mut s, "sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[w,d]}));
         run(&mut s, "sketch.finish", json!({}));
-        let e = s.execute("solid.extrude", &p).unwrap_err().to_string();
-        assert!(e.contains("not supported yet: taper with two-sided or symmetric extents"), "{p}: {e}");
+        run(&mut s, "solid.extrude", p);
+        s
+    };
+    // (params, the volume, z extent, flat wall faces: 4 for one cone, 8 for two halves)
+    let cases = [
+        (json!({"distance":h,"distance2":h2,"taper":"6 deg","body_name":"B"}), frustum(h, 6.0) + frustum(h2, 0.0), (-h2, h), 8),
+        (json!({"distance":h,"distance2":h2,"taper":"6 deg","taper2":"3 deg","body_name":"B"}), frustum(h, 6.0) + frustum(h2, 3.0), (-h2, h), 8),
+        (json!({"distance":h,"distance2":h2,"taper":"6 deg","taper2":"-6 deg","body_name":"B"}), frustum(h, 6.0) + frustum(h2, -6.0), (-h2, h), 4),
+        (json!({"distance":h,"direction":"negative","distance2":h2,"taper":"-4 deg","taper2":"2 deg","body_name":"B"}), frustum(h, -4.0) + frustum(h2, 2.0), (-h, h2), 8),
+        (json!({"distance":h,"direction":"symmetric","taper":"6 deg","body_name":"B"}), 2.0 * frustum(h / 2.0, 6.0), (-h / 2.0, h / 2.0), 8),
+        (json!({"distance":h,"direction":"symmetric","taper":"6 deg","taper2":"-6 deg","body_name":"B"}), frustum(h / 2.0, 6.0) + frustum(h / 2.0, -6.0), (-h / 2.0, h / 2.0), 4),
+    ];
+    for (p, want, (z0, z1), walls_want) in cases {
+        let mut s = part(p.clone());
+        let v = volume(&mut s);
+        assert!(rel(v, want) < 1e-9, "{p}: {v} mm3 for {want}");
+        let st = s.model.state();
+        let b = &st.body("B").unwrap().body;
+        let m = measure_body(b).unwrap();
+        assert!((m.bbox.min.z - z0).abs() < 1e-9 && (m.bbox.max.z - z1).abs() < 1e-9, "{p}: {:?} for z {z0}..{z1}", m.bbox);
+        let (mut walls, mut caps) = (0, 0);
+        for i in 0..b.face_count() {
+            match face_surface(b, i) {
+                Some(FaceSurface::Plane { normal, .. }) if normal.z.abs() > 1.0 - 1e-9 => caps += 1,
+                Some(FaceSurface::Plane { .. }) => walls += 1,
+                other => panic!("{p}: face {i} is {other:?}"),
+            }
+        }
+        assert_eq!((walls, caps), (walls_want, 2), "{p}");
     }
 }
 

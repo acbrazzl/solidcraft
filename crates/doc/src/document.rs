@@ -340,6 +340,12 @@ pub struct Extent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[walk(angle = "Taper angle")]
     pub taper: Option<Expr>,
+    /// Two Sides or Symmetric: the second side's taper angle (expression; positive grows the
+    /// profile going away from the start plane). Without it a Symmetric extrude's sides mirror
+    /// each other (both take `taper`) and a Two Sides extrude's second side stands straight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[walk(angle = "Taper angle 2")]
+    pub taper2: Option<Expr>,
     /// How a taper closes the profile's sharp corners, when the user chose
     /// ([`solidcraft_kernel::draft_corners`] says what each rule gives at each corner). Without
     /// it each profile takes preserve curvature where the kernel can build it exactly and the

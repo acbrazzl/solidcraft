@@ -110,6 +110,10 @@ pub struct ExtrudeParams {
     /// extrusion direction; negative: inward, so the far end is smaller).
     #[serde(default)]
     pub taper: Option<AngleExpr>,
+    /// Two Sides or Symmetric: the second side's draft angle, measured the same way going away
+    /// from the start plane. Default: Symmetric mirrors `taper`; Two Sides leaves it straight.
+    #[serde(default)]
+    pub taper2: Option<AngleExpr>,
     /// Which way to extrude. Default: positive.
     #[serde(default)]
     pub direction: Option<DirectionParam>,
