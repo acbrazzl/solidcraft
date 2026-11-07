@@ -388,6 +388,33 @@ fn draft_tilts_a_side_about_its_line_on_the_neutral_plane() {
     assert_untouched(&c, 8000.0, [6, 12, 8]);
 }
 
+/// A side face drafted after a neighbour's draft: an 18 x 32 x 9 block with two 6 x 8 x 4 ears on
+/// its y sides, the bottom drafted -3 degrees about x = 0.75, then each ear's outer face -3
+/// degrees about x = 0 (pull -x throughout). The bottom's draft extends the ear faces' surfaces to
+/// meet it and trims them back, leaving each a stored UV domain about 170 across for a face 8 x 4;
+/// hinging the ear face on a point found inside it then searched lines 8 apart across that domain,
+/// found none, and refused the draft (SM_ERR_INVALID_INPUT). With t = tan 3 degrees the bottom
+/// removes 4968 t (t (x - 0.75) over the footprint) and each ear face t (72 - 58.5 t)
+/// (t x over x 0..6, from the drafted bottom up to z = 4): V = 5568 - 5112 t + 117 t^2. Drafting
+/// the ears first, before their domains grow, is the same solid.
+#[test]
+fn draft_a_side_after_a_neighbours_draft_hinges_on_its_plane() {
+    let deg = std::f64::consts::PI / 180.0;
+    let t = (3.0 * deg).tan();
+    let want = 5568.0 - 5112.0 * t + 117.0 * t * t;
+    let x = [-1.0, 0.0, 0.0];
+    let ear = |y: f64| Brep::make_box([0.0, y, 0.0], [6.0, 8.0, 4.0]).unwrap();
+    let block = Brep::make_box([0.0, -16.0, 0.0], [18.0, 32.0, 9.0]).unwrap();
+    let body = Brep::union_all(&[&block, &ear(16.0), &ear(-24.0)]).unwrap();
+    assert!((body.volume(ACC).unwrap() - 5568.0).abs() < 1e-6);
+    let bottom = |b: &Brep| b.draft(&[[9.0, 0.0, 0.0]], 1e-3, [0.75, 0.0, 4.5], x, x, -3.0 * deg).unwrap();
+    let side = |b: &Brep, y: f64| b.draft(&[[3.0, y, 2.0]], 1e-3, [0.0; 3], x, x, -3.0 * deg).unwrap();
+    let after = side(&side(&bottom(&body), 24.0), -24.0);
+    assert!((after.volume(ACC).unwrap() - want).abs() < 1e-6, "{}", after.volume(ACC).unwrap());
+    let first = bottom(&side(&side(&body, 24.0), -24.0));
+    assert!((first.volume(ACC).unwrap() - want).abs() < 1e-6, "{}", first.volume(ACC).unwrap());
+}
+
 /// The corner of r5 rounds at (60, 40, 20) on a 60 x 40 x 20 box, set back 8 and left open: the
 /// box's six faces and the three rounds (9 faces, 30 edges, 22 vertices), a sheet SMLib's check
 /// passes, and one hole of twelve edges (each section and face curve in two), chained end to

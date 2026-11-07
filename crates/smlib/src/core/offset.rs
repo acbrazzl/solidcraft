@@ -622,14 +622,18 @@ pub(crate) fn draft(
             if n.dot(along).abs() > 1e-6 {
                 return Ok(Err(Error::Unsupported));
             }
-            let Some(inside) = answer(face_internal_point(k, &mut w, f))? else {
-                return Ok(Err(Error::Status(INVALID_INPUT)));
-            };
+            // Any point of the plane hinges it on the same line: the plane is spanned by the
+            // pull and n x pull, a step along the pull is undone moving onto the neutral plane,
+            // and a step along n x pull stays on the axis. So the plane's own origin, not a point
+            // inside the face: `face_internal_point` searches lines across the face's stored UV
+            // domain, which a draft of a neighbour leaves far wider than a small face, and it
+            // then finds nothing and refuses a face that has an interior.
+            let on = plane.position().origin();
             let toward = along.dot(normal);
             if toward.abs() < 1e-12 {
                 return Ok(Err(Error::Argument));
             }
-            let hinge = inside + along * ((p3(neutral_origin) - inside).dot(normal) / toward);
+            let hinge = on + along * ((p3(neutral_origin) - on).dot(normal) / toward);
             // Turning n about n x pull by `angle` gives n cos(angle) + pull sin(angle).
             let axis = n.cross(along);
             let len = axis.length();
